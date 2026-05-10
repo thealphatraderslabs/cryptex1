@@ -40,6 +40,7 @@ const TF_MAP = {
   '1h':  { bybit: '60',  fapi: '1h',  htfBybit: '240', htfFapi: '4h'  },
   '4h':  { bybit: '240', fapi: '4h',  htfBybit: 'D',   htfFapi: '1d'  },
   '1d':  { bybit: 'D',   fapi: '1d',  htfBybit: 'W',   htfFapi: '1w'  },
+  '1w':  { bybit: 'W',   fapi: '1w',  htfBybit: 'W',   htfFapi: '1w'  },
 };
 
 // ── State ──────────────────────────────────────────────────────
