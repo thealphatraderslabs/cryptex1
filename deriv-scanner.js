@@ -530,7 +530,22 @@ export async function runDerivScan({ exchange, tf, onProgress, onResult, onDone,
     }
 
     // ── Step 2: Gate 2 — Funding gate (on Gate 1 survivors) ─
-    // No extra API calls — ticker data already fetched in Gate 1
+    // No extra API calls — ticker data already fetched in Gate 1.
+    // Emit gate2_start so UI can activate the gate 2 row visually,
+    // then yield to the browser with sleep(0) before running the loop,
+    // then yield again after so UI renders completion before Gate 3 starts.
+
+    const g1Survivors = [...gate1Results.values()].filter(r => r.g1.pass).length;
+
+    // Emit: Gate 2 is starting — lets UI mark gate 1 done + activate gate 2
+    onProgress({
+      phase: 'gate2_start',
+      done:  0,
+      total: g1Survivors,
+      msg:   `Gate 2 (Funding) · evaluating ${g1Survivors} SMC qualifiers…`,
+    });
+    await sleep(80); // yield — let browser paint gate 2 active state
+
     const gate2Results = new Map();
     for (const [sym, r] of gate1Results) {
       if (!r.g1.pass || !r.ticker) continue;
@@ -539,11 +554,15 @@ export async function runDerivScan({ exchange, tf, onProgress, onResult, onDone,
     }
 
     const g2Count = gate2Results.size;
+
+    // Emit: Gate 2 complete
     onProgress({
       phase: 'gate2',
-      done: total, total,
-      msg:  `Gate 2 (Funding) · ${g2Count} passed from ${[...gate1Results.values()].filter(r => r.g1.pass).length} SMC qualifiers`,
+      done:  g1Survivors,
+      total: g1Survivors,
+      msg:   `Gate 2 (Funding) · ${g2Count} passed from ${g1Survivors} SMC qualifiers`,
     });
+    await sleep(120); // yield — let browser paint gate 2 done + gate 3 active before fetches start
 
     if (scanAborted || !g2Count) {
       onDone({ results: [], total, aborted: scanAborted });
