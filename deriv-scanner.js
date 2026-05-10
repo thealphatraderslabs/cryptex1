@@ -31,9 +31,16 @@ const BATCH_DELAY_G1 = 150; // ms between G1 batches
 const BATCH_DELAY_G3 = 200; // ms between G3 batches
 
 // Gate thresholds
-const FUNDING_THRESHOLD     = 0.0005;   // ±0.05% raw — must have meaningful imbalance
+const FUNDING_THRESHOLD     = 0.003;    // ±0.30% raw — meaningful imbalance only
+                                        // matches funding-scanner's spirit: coins with
+                                        // real leverage imbalance, not noise near zero
+const FUNDING_STRONG        = 0.001;    // ±0.10% raw — still useful but not extreme
 const DERIV_SCORE_LONG_MIN  = 58;       // derivScore ≥ 58 for long
 const DERIV_SCORE_SHORT_MAX = 42;       // derivScore ≤ 42 for short
+
+// Set true to allow neutral-funding coins through Gate 2 (weaker signal)
+// Set false (default) to require actual directional funding imbalance
+const FUNDING_NEUTRAL_PASS  = false;
 
 const TF_MAP = {
   '15m': { bybit: '15',  fapi: '15m', htfBybit: '60',  htfFapi: '1h'  },
@@ -348,53 +355,84 @@ function runGate1(htfCandles, ticker) {
 function runGate2(ticker, smcDir, fundingInfoMap, symbol) {
   if (!ticker) return { pass: false, rate: 0, reason: 'No ticker data' };
 
-  const rawRate     = ticker.fundingRate / 100; // convert back to raw decimal
+  const rawRate     = ticker.fundingRate / 100; // ticker stores % → back to raw decimal
   const intervalHrs = fundingInfoMap.get(symbol) || fundingInfoMap.get(symbol.toUpperCase() + 'USDT') || 8;
   const normRate    = rawRate * (8 / intervalHrs);
 
-  // Direction check — contrarian funding is what we WANT
-  // For a LONG setup: negative funding = shorts paying longs = bullish pressure
-  // For a SHORT setup: positive funding = longs paying shorts = bearish pressure
+  // We evaluate on normRate (8h-equivalent) so a 4h-interval coin at 0.15% raw
+  // correctly reads as 0.30% per 8h and gets treated as a strong signal.
+  // FUNDING_THRESHOLD = 0.003 raw = 0.30% per 8h equivalent
+  // FUNDING_STRONG    = 0.001 raw = 0.10% per 8h equivalent
+
   let pass = false, reason = '', fundDir = 'neutral';
 
-  const absFR = Math.abs(rawRate);
-
   if (smcDir === 'bull') {
-    if (rawRate <= -FUNDING_THRESHOLD) {
+    if (normRate <= -FUNDING_THRESHOLD) {
+      // Strong negative — shorts heavily over-leveraged, prime squeeze fuel
+      pass    = true;
+      fundDir = 'negative_strong';
+      reason  = `Strong negative funding ${(normRate * 100).toFixed(4)}% /8h — shorts heavily over-leveraged, prime squeeze setup for longs`;
+    } else if (normRate <= -FUNDING_STRONG) {
+      // Moderate negative — still meaningful
       pass    = true;
       fundDir = 'negative';
-      reason  = `Negative funding ${(rawRate * 100).toFixed(4)}% — shorts over-leveraged, squeeze risk supports longs`;
-      if (intervalHrs !== 8) reason += ` (${(normRate * 100).toFixed(4)}% per 8h, ${intervalHrs}h interval)`;
-    } else if (rawRate >= FUNDING_THRESHOLD * 4) {
-      // Very high positive = danger for longs
+      reason  = `Negative funding ${(normRate * 100).toFixed(4)}% /8h — shorts over-leveraged, supports long setup`;
+    } else if (normRate >= FUNDING_THRESHOLD) {
+      // Very high positive = dangerous for longs — crowd already long
       pass   = false;
-      reason = `Funding too high (${(rawRate * 100).toFixed(4)}%) — over-leveraged longs, squeeze risk`;
+      fundDir = 'positive_extreme';
+      reason = `Funding too high (+${(normRate * 100).toFixed(4)}% /8h) — crowd over-leveraged long, long squeeze risk`;
+    } else if (normRate >= FUNDING_STRONG) {
+      // Moderate positive on a long = caution but not blocking if SMC is strong
+      // Still fail — we require funding to SUPPORT the trade, not work against it
+      pass   = false;
+      fundDir = 'positive';
+      reason = `Positive funding (+${(normRate * 100).toFixed(4)}% /8h) — longs already paying, no squeeze fuel for upside`;
     } else {
-      // Neutral — mild pass (not ideal but not blocking)
-      pass    = true;
+      // Near-neutral: −0.10% to +0.10% — not enough signal
+      pass    = FUNDING_NEUTRAL_PASS;
       fundDir = 'neutral';
-      reason  = `Funding neutral (${(rawRate * 100).toFixed(4)}%) — no strong derivative pressure`;
+      reason  = `Funding near-neutral (${(normRate * 100).toFixed(4)}% /8h) — no meaningful leverage imbalance detected`;
     }
+    if (intervalHrs !== 8 && normRate !== rawRate * (8 / intervalHrs)) {
+      reason += ` [raw ${(rawRate * 100).toFixed(4)}% · ${intervalHrs}h interval]`;
+    } else if (intervalHrs !== 8) {
+      reason += ` [raw ${(rawRate * 100).toFixed(4)}% · ${intervalHrs}h interval]`;
+    }
+
   } else if (smcDir === 'bear') {
-    if (rawRate >= FUNDING_THRESHOLD) {
+    if (normRate >= FUNDING_THRESHOLD) {
+      // Strong positive — longs heavily over-leveraged, prime squeeze fuel for shorts
+      pass    = true;
+      fundDir = 'positive_strong';
+      reason  = `Strong positive funding +${(normRate * 100).toFixed(4)}% /8h — longs heavily over-leveraged, prime squeeze setup for shorts`;
+    } else if (normRate >= FUNDING_STRONG) {
       pass    = true;
       fundDir = 'positive';
-      reason  = `Positive funding ${(rawRate * 100).toFixed(4)}% — longs over-leveraged, squeeze risk supports shorts`;
-      if (intervalHrs !== 8) reason += ` (${(normRate * 100).toFixed(4)}% per 8h, ${intervalHrs}h interval)`;
-    } else if (rawRate <= -FUNDING_THRESHOLD * 4) {
+      reason  = `Positive funding +${(normRate * 100).toFixed(4)}% /8h — longs over-leveraged, supports short setup`;
+    } else if (normRate <= -FUNDING_THRESHOLD) {
+      // Very negative = dangerous for shorts — crowd already short
       pass   = false;
-      reason = `Funding very negative (${(rawRate * 100).toFixed(4)}%) — over-leveraged shorts, squeeze risk`;
+      fundDir = 'negative_extreme';
+      reason = `Funding very negative (${(normRate * 100).toFixed(4)}% /8h) — crowd over-leveraged short, short squeeze risk`;
+    } else if (normRate <= -FUNDING_STRONG) {
+      pass   = false;
+      fundDir = 'negative';
+      reason = `Negative funding (${(normRate * 100).toFixed(4)}% /8h) — shorts already paying, no squeeze fuel for downside`;
     } else {
-      pass    = true;
+      pass    = FUNDING_NEUTRAL_PASS;
       fundDir = 'neutral';
-      reason  = `Funding neutral (${(rawRate * 100).toFixed(4)}%) — no strong derivative pressure`;
+      reason  = `Funding near-neutral (${(normRate * 100).toFixed(4)}% /8h) — no meaningful leverage imbalance detected`;
+    }
+    if (intervalHrs !== 8) {
+      reason += ` [raw ${(rawRate * 100).toFixed(4)}% · ${intervalHrs}h interval]`;
     }
   }
 
   return {
     pass,
-    rate:        rawRate * 100, // back to % for display
-    normRate:    normRate * 100,
+    rate:        rawRate * 100,   // display in %
+    normRate:    normRate * 100,  // display in %
     intervalHrs,
     fundDir,
     reason,
