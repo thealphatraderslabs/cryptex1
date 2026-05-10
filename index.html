@@ -1,0 +1,837 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+  <title>ATL · Ticker Analyzer</title>
+  <meta name="description" content="AlphaTradersLabs — Institutional-grade crypto analysis terminal.">
+  <meta name="theme-color" content="#080b0f">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=JetBrains+Mono:wght@300;400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+</head>
+<body>
+
+<!-- ══ HEADER ══════════════════════════════════════════════════════
+     Single top bar: logo | divider | tag | clock+status (right)
+     CHANGE: removed separate #analysis-cmd + #price-hero rows.
+     Everything now lives in one 44px bar (#atl-header) + the
+     price-hero strip directly below it, collapsed to minimum height.
+═══════════════════════════════════════════════════════════════════ -->
+<header id="atl-header">
+  <div class="atl-logo">
+    <span class="accent">ATL</span><span class="dot">·</span>ANALYZER
+  </div>
+  <div class="header-divider"></div>
+  <span class="header-tag">MARKET INTELLIGENCE TERMINAL</span>
+  <div class="header-right">
+    <span id="atl-clock">00:00:00 UTC</span>
+    <div class="status-pill">
+      <div class="status-dot" id="global-status-dot"></div>
+      <span id="global-status-text">READY</span>
+    </div>
+  </div>
+</header>
+
+<!-- ══ COMMAND + PRICE STRIP ═══════════════════════════════════════
+     CHANGE: #analysis-cmd and #price-hero merged into a single
+     #top-strip element.  Left side: ticker input + TF selector +
+     quick-ticker pills + ANALYSE button + AUTO toggle.
+     Right side: price hero (symbol / price / change) + 8 stat chips
+     + bias block pushed to far right via margin-left:auto.
+     This matches the target's single-row dense layout.
+═══════════════════════════════════════════════════════════════════ -->
+<div id="top-strip">
+
+  <!-- Command side -->
+  <div id="top-cmd">
+    <span class="cmd-label">TICKER</span>
+    <input id="tickerInput" type="text" placeholder="BTC" maxlength="12"
+           autocomplete="off" autocorrect="off" spellcheck="false">
+    <span class="cmd-label">TF</span>
+    <select id="tfSelect">
+      <option value="1m">1m</option>
+      <option value="5m">5m</option>
+      <option value="15m">15m</option>
+      <option value="1h" selected>1H</option>
+      <option value="4h">4H</option>
+      <option value="1d">1D</option>
+      <option value="1w">1W</option>
+    </select>
+    <div class="tf-pills">
+      <button class="tf-pill" data-ticker="BTC">BTC</button>
+      <button class="tf-pill" data-ticker="ETH">ETH</button>
+      <button class="tf-pill" data-ticker="SOL">SOL</button>
+      <button class="tf-pill" data-ticker="BNB">BNB</button>
+      <button class="tf-pill" data-ticker="DOGE">DOGE</button>
+    </div>
+    <button id="analysisBtn">ANALYSE</button>
+    <span id="statusMsg"></span>
+    <div class="cmd-sep"></div>
+    <span class="cmd-label">AUTO</span>
+    <button id="autoRefreshBtn" class="auto-off">OFF</button>
+    <select id="refreshIntervalSel">
+      <option value="30">30s</option>
+      <option value="60" selected>1m</option>
+      <option value="120">2m</option>
+      <option value="300">5m</option>
+    </select>
+    <span id="last-updated"></span>
+  </div>
+
+  <!-- Price + stats side -->
+  <div id="top-price">
+    <!-- Symbol + price + change -->
+    <div class="ph-main">
+      <div class="ph-ticker" id="h-ticker">—</div>
+      <div class="ph-price" id="h-price">—</div>
+      <div class="ph-change neutral" id="h-change">—</div>
+    </div>
+
+    <!-- 8 stat chips inline -->
+    <div class="ph-stats">
+      <div class="ph-stat">
+        <div class="ph-stat-label">24H HIGH</div>
+        <div class="ph-stat-val" id="h-high">—</div>
+      </div>
+      <div class="ph-stat">
+        <div class="ph-stat-label">24H LOW</div>
+        <div class="ph-stat-val" id="h-low">—</div>
+      </div>
+      <div class="ph-stat">
+        <div class="ph-stat-label">VOLUME 24H</div>
+        <div class="ph-stat-val" id="h-vol">—</div>
+      </div>
+      <div class="ph-stat">
+        <div class="ph-stat-label">OPEN INTEREST</div>
+        <div class="ph-stat-val" id="h-oi">—</div>
+      </div>
+      <div class="ph-stat">
+        <div class="ph-stat-label">FUNDING</div>
+        <div class="ph-stat-val" id="h-funding">—</div>
+      </div>
+      <div class="ph-stat">
+        <div class="ph-stat-label">RSI (14)</div>
+        <div class="ph-stat-val" id="h-rsi">—</div>
+      </div>
+      <div class="ph-stat">
+        <div class="ph-stat-label">MARK PRICE</div>
+        <div class="ph-stat-val" id="h-mark">—</div>
+      </div>
+      <div class="ph-stat">
+        <div class="ph-stat-label">ATR (14)</div>
+        <div class="ph-stat-val" id="h-atr">—</div>
+      </div>
+    </div>
+
+    <!-- OVERALL BIAS block — pushed to far right -->
+    <!-- CHANGE: ph-bias-val bumped to 18-20px in CSS (see style.css).
+         h-bias-conf now shows "Score: +39" sub-label only. -->
+    <div class="ph-bias" id="ph-bias-wrap">
+      <!-- populated by renderBiasHero() in app.js -->
+      <div class="ph-bias-label">OVERALL BIAS</div>
+      <div class="ph-bias-val neutral" id="h-bias">—</div>
+      <div class="ph-bias-conf" id="h-bias-conf">—</div>
+    </div>
+  </div>
+
+</div><!-- /top-strip -->
+
+<!-- ══ VERTICAL ICON RAIL ══════════════════════════════════════ -->
+<nav id="atl-rail">
+  <div class="rail-icon active" id="rail-analysis" title="Analysis">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+      <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+    </svg>
+  </div>
+  <div class="rail-divider"></div>
+  <div class="rail-icon" id="rail-smc" title="SMC Scanner">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+      <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+      <line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/>
+    </svg>
+  </div>
+  <div class="rail-divider"></div>
+  <div class="rail-icon rail-stub" title="MIT Scan (coming soon)">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+      <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+    </svg>
+  </div>
+  <div class="rail-divider"></div>
+  <div class="rail-icon rail-stub" title="BTC Pair Scanner (coming soon)">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+      <circle cx="12" cy="12" r="9"/>
+      <path d="M9 8h4.5a2 2 0 0 1 0 4H9v0h5a2 2 0 0 1 0 4H9"/>
+      <line x1="11" y1="6" x2="11" y2="8"/><line x1="13" y1="6" x2="13" y2="8"/>
+      <line x1="11" y1="16" x2="11" y2="18"/><line x1="13" y1="16" x2="13" y2="18"/>
+    </svg>
+  </div>
+  <div class="rail-divider"></div>
+  <div class="rail-icon" id="rail-funding" title="Funding Scanner">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+      <line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+    </svg>
+  </div>
+  <div class="rail-divider"></div>
+  <div class="rail-icon" id="rail-deriv" title="Derivatives Confluence Scanner">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+      <path d="M2 20h20M6 20V10M10 20V4M14 20V14M18 20V8"/>
+      <circle cx="10" cy="4" r="1.5" fill="currentColor" stroke="none"/>
+    </svg>
+  </div>
+  <div class="rail-divider" style="margin-top:auto"></div>
+  <div class="rail-icon" id="rail-refresh" title="Refresh data">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+      <polyline points="23 4 23 10 17 10"/>
+      <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+    </svg>
+  </div>
+</nav>
+
+<!-- ══ MOBILE BOTTOM RAIL ══════════════════════════════════════ -->
+<div id="mobile-bottom-rail">
+  <button class="mbr-btn active" id="mbr-analysis">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+    <span>Analysis</span>
+  </button>
+  <button class="mbr-btn" id="mbr-smc">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+      <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+      <line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/>
+    </svg>
+    <span>Scanner</span>
+  </button>
+  <button class="mbr-btn" id="mbr-funding">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+      <line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+    </svg>
+    <span>Funding</span>
+  </button>
+  <button class="mbr-btn" id="mbr-deriv">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+      <path d="M2 20h20M6 20V10M10 20V4M14 20V14M18 20V8"/>
+      <circle cx="10" cy="4" r="1.5" fill="currentColor" stroke="none"/>
+    </svg>
+    <span>Deriv</span>
+  </button>
+</div>
+
+<!-- ══ STAGE ════════════════════════════════════════════════════ -->
+<div id="stage">
+<div id="stage-analysis">
+
+  <!-- ── MOBILE PANEL TABS ───────────────────────────────────── -->
+  <div id="mobile-panel-tabs">
+    <button class="mpt-btn active" data-panel="struct">Chart &amp; Structure</button>
+    <button class="mpt-btn" data-panel="deriv">Derivatives</button>
+    <button class="mpt-btn" data-panel="trade">Trade Setup</button>
+  </div>
+
+  <!-- ── 3-COL ANALYSIS GRID ────────────────────────────────── -->
+  <div id="analysis-grid">
+
+    <!-- ══ LEFT: DERIVATIVES ═════════════════════════════════════
+         No structural changes here — same sections as before.
+         CHANGE: deriv-sec-title loses its background in style.css
+         (not in HTML). HTML structure unchanged.
+    ════════════════════════════════════════════════════════════ -->
+    <div class="a-panel" id="panel-deriv">
+
+      <div class="panel-hd">
+        <span class="panel-hd-label">DERIVATIVES INTEL</span>
+      </div>
+
+      <!-- Funding Rate (Phase 4: interval tag + normalised rate + history spark) -->
+      <div class="deriv-section">
+        <div class="deriv-sec-title">FUNDING RATE</div>
+        <div class="deriv-row">
+          <span class="deriv-key">CURRENT RATE</span>
+          <span class="deriv-val" id="d-funding">—</span>
+        </div>
+        <div class="deriv-row">
+          <span class="deriv-key">INTERVAL</span>
+          <span class="deriv-val" id="d-funding-interval" style="color:var(--muted)">—</span>
+        </div>
+        <div class="deriv-row">
+          <span class="deriv-key">NEXT FUNDING</span>
+          <span class="deriv-val" id="d-funding-t">—</span>
+        </div>
+        <div class="deriv-row">
+          <span class="deriv-key">INTERPRETATION</span>
+          <span class="deriv-val" id="d-funding-interp">—</span>
+        </div>
+        <!-- 8-bar funding history mini spark -->
+        <div class="funding-spark-row">
+          <span style="font-size:7px;color:var(--muted);letter-spacing:0.1em;text-transform:uppercase;flex-shrink:0">RECENT</span>
+          <div id="d-funding-spark" style="display:flex;align-items:flex-end;gap:2px;height:22px"></div>
+        </div>
+      </div>
+
+      <!-- Open Interest (Phase 4: money flow label + OI/MCap ratio) -->
+      <div class="deriv-section">
+        <div class="deriv-sec-title">OPEN INTEREST</div>
+        <!-- Money flow label: INFLOW / OUTFLOW / COVERING / LIQUIDATING -->
+        <div class="money-flow-row">
+          <span style="font-size:7px;color:var(--muted);letter-spacing:0.12em;text-transform:uppercase">NET FLOW</span>
+          <span id="d-money-flow" style="font-size:10px;font-weight:700;font-family:var(--font-head);letter-spacing:0.1em">—</span>
+        </div>
+        <div class="deriv-row">
+          <span class="deriv-key">OI VALUE</span>
+          <span class="deriv-val" id="d-oi">—</span>
+        </div>
+        <div class="deriv-row">
+          <span class="deriv-key">24H TREND</span>
+          <span class="deriv-val" id="d-oi-trend">—</span>
+        </div>
+        <div class="deriv-row">
+          <span class="deriv-key">OI / MCAP</span>
+          <span class="deriv-val" id="d-oi-mcap" style="color:var(--muted)">— <span style="font-size:7px;color:var(--muted)">(BTC/ETH/SOL only)</span></span>
+        </div>
+        <div class="oi-spark-wrap">
+          <div class="oi-spark-label">OI HISTORY (48H)</div>
+          <div class="oi-spark-bars" id="oi-spark"></div>
+        </div>
+      </div>
+
+      <!-- Basis / Spread (Phase 4: new section) -->
+      <div class="deriv-section">
+        <div class="deriv-sec-title">BASIS &amp; SPREAD</div>
+        <div class="deriv-row">
+          <span class="deriv-key">BASIS (MARK−IDX)</span>
+          <span class="deriv-val" id="d-basis-val">—</span>
+        </div>
+        <div class="deriv-row">
+          <span class="deriv-key">BASIS SLOPE</span>
+          <span class="deriv-val" id="d-basis-direction">—</span>
+        </div>
+        <div class="deriv-row">
+          <span class="deriv-key">BID/ASK SPREAD</span>
+          <span class="deriv-val" id="d-spread">—</span>
+        </div>
+        <!-- Basis sparkline — SVG injected by renderBasisSparkline() -->
+        <div class="basis-spark-wrap">
+          <div class="basis-spark-label">BASIS HISTORY (60 BARS)</div>
+          <div id="d-basis-spark"></div>
+        </div>
+      </div>
+
+      <!-- Taker Flow (Phase 4: derivScore gauge added below bar) -->
+      <div class="deriv-section">
+        <div class="deriv-sec-title">TAKER FLOW</div>
+        <div class="deriv-row">
+          <span class="deriv-key">NET BIAS</span>
+          <span class="deriv-val" id="d-taker-bias">—</span>
+        </div>
+        <div class="ls-bar-wrap">
+          <div class="ls-bar-track">
+            <div class="ls-long-fill" id="d-taker-bar" style="width:50%"></div>
+          </div>
+          <div class="ls-labels">
+            <span class="ls-long-lbl"  id="d-buy-pct">BUY —</span>
+            <span class="ls-short-lbl" id="d-sell-pct">SELL —</span>
+          </div>
+        </div>
+        <!-- Phase 4: Derivatives Score Gauge — populated by renderDerivScoreGauge() -->
+        <div id="d-deriv-score-gauge"></div>
+      </div>
+
+      <!-- Order Book -->
+      <div class="deriv-section">
+        <div class="deriv-sec-title">ORDER BOOK DEPTH</div>
+        <div class="deriv-row">
+          <span class="deriv-key">BOOK BIAS</span>
+          <span class="deriv-val" id="d-ob-bias">—</span>
+        </div>
+        <div class="ls-bar-wrap">
+          <div class="ls-bar-track">
+            <div class="ls-long-fill" id="d-ob-bar" style="width:50%"></div>
+          </div>
+          <div class="ls-labels">
+            <span class="ls-long-lbl"  id="d-bid-pct">BID —</span>
+            <span class="ls-short-lbl" id="d-ask-pct">ASK —</span>
+          </div>
+        </div>
+        <div class="deriv-row">
+          <span class="deriv-key">BID WALLS</span>
+          <span class="deriv-val" id="d-bid-walls">—</span>
+        </div>
+        <div class="deriv-row">
+          <span class="deriv-key">ASK WALLS</span>
+          <span class="deriv-val" id="d-ask-walls">—</span>
+        </div>
+      </div>
+
+      <!-- Mark / Index (Phase 4: spread moved to Basis section above) -->
+      <div class="deriv-section">
+        <div class="deriv-sec-title">MARK / INDEX</div>
+        <div class="deriv-row">
+          <span class="deriv-key">MARK PRICE</span>
+          <span class="deriv-val" id="d-mark">—</span>
+        </div>
+        <div class="deriv-row">
+          <span class="deriv-key">INDEX PRICE</span>
+          <span class="deriv-val" id="d-index">—</span>
+        </div>
+      </div>
+
+      <!-- Insurance Fund (Phase 4: new section) -->
+      <div class="deriv-section">
+        <div class="deriv-sec-title">INSURANCE FUND (BYBIT BTC)</div>
+        <!-- Populated entirely by renderInsuranceSection() in app.js -->
+        <div id="d-insurance-section">
+          <div class="deriv-row">
+            <span class="deriv-key">BTC Fund</span>
+            <span class="deriv-val" style="color:var(--muted)">RUN ANALYSIS FIRST</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Liquidation clusters -->
+      <div class="deriv-section">
+        <div class="deriv-sec-title">EST. LIQ. CLUSTERS</div>
+        <div id="liq-container">
+          <div class="empty-state" style="height:50px;font-size:8px">RUN ANALYSIS FIRST</div>
+        </div>
+      </div>
+
+      <!-- Funding history -->
+      <div class="deriv-section">
+        <div class="deriv-sec-title">FUNDING HISTORY (LAST 8)</div>
+        <div id="funding-history-list">
+          <div class="empty-state" style="height:40px;font-size:8px">—</div>
+        </div>
+      </div>
+
+    </div><!-- /panel-deriv -->
+
+    <!-- ══ CENTRE: CHART + STRUCTURE ════════════════════════════
+         CHANGES:
+           • #sub-panels hidden by default (display:none in CSS).
+             RSI/MACD are still initialised by JS so data is ready
+             but they take no visual space until implemented properly.
+           • struct-grid kept as-is (6 cells, 2-col).
+           • #mtf-bias-table NEW block inserted between FVG list
+             and Key S/R levels. JS renders into it via
+             renderMTFBiasTable(). Required CSS classes:
+             .mtf-table, .mtf-header-row, .mtf-row, .mtf-col-*
+             are defined in style.css update.
+    ════════════════════════════════════════════════════════════ -->
+    <div class="a-panel" id="panel-struct">
+
+      <div class="panel-hd">
+        <span class="panel-hd-label" id="struct-tf-label">MARKET STRUCTURE</span>
+        <span class="panel-hd-sub" id="struct-updated">—</span>
+      </div>
+
+      <!-- Chart — height increased to 380px in style.css -->
+      <div id="canvasWrap">
+        <div id="chart-container"></div>
+      </div>
+
+      <!-- Sub-panels: RSI + MACD
+           CHANGE: hidden by default. JS still initialises them so
+           the data pipelines work. Unhide when full implementation
+           is done in a future style.css pass. -->
+      <div id="sub-panels" style="display:none">
+        <div class="sub-panel">
+          <div class="sub-panel-label">RSI (14)</div>
+          <div id="rsi-container"></div>
+        </div>
+        <div class="sub-panel">
+          <div class="sub-panel-label">MACD (12/26/9)</div>
+          <div id="macd-container"></div>
+        </div>
+      </div>
+
+      <!-- Structure summary grid — 6 cells, 2-col, unchanged -->
+      <div class="struct-grid">
+        <div class="struct-cell">
+          <div class="struct-cell-label">SUPERTREND / TREND</div>
+          <div class="struct-cell-value" id="s-trend">—</div>
+          <div class="struct-cell-sub" id="s-trend-sub">—</div>
+        </div>
+        <div class="struct-cell">
+          <div class="struct-cell-label">HTF BIAS (4H)</div>
+          <div class="struct-cell-value" id="s-htf">—</div>
+          <div class="struct-cell-sub" id="s-htf-sub">—</div>
+        </div>
+        <div class="struct-cell">
+          <div class="struct-cell-label">BOS / CHOCH</div>
+          <div class="struct-cell-value" id="s-struct"><span class="tag neutral">NONE</span></div>
+          <div class="struct-cell-sub" id="s-struct-sub">—</div>
+        </div>
+        <div class="struct-cell">
+          <div class="struct-cell-label">P/D ZONE</div>
+          <div class="struct-cell-value" id="s-zone">—</div>
+          <div class="struct-cell-sub" id="s-zone-sub">—</div>
+        </div>
+        <div class="struct-cell">
+          <div class="struct-cell-label">SWING HIGH</div>
+          <div class="struct-cell-value" id="s-sh">—</div>
+          <div class="struct-cell-sub" id="s-sh-sub">—</div>
+        </div>
+        <div class="struct-cell">
+          <div class="struct-cell-label">SWING LOW</div>
+          <div class="struct-cell-value" id="s-sl">—</div>
+          <div class="struct-cell-sub" id="s-sl-sub">—</div>
+        </div>
+      </div>
+
+      <!-- Order Blocks — CHANGE: ob-card now has % dist badge
+           (rendered by JS, no HTML change needed here) -->
+      <div class="panel-hd panel-hd-inner">
+        <span class="panel-hd-label">ORDER BLOCKS</span>
+        <span class="panel-hd-sub">NEAREST FRESH ZONES</span>
+      </div>
+      <div id="ob-container">
+        <div class="empty-state" style="height:50px;font-size:8px">RUN ANALYSIS FIRST</div>
+      </div>
+
+      <!-- FVGs — CHANGE: fvg-row now has OPEN/FILLED status tag
+           (rendered by JS, no HTML change needed here) -->
+      <div class="panel-hd panel-hd-inner">
+        <span class="panel-hd-label">FAIR VALUE GAPS</span>
+        <span class="panel-hd-sub" id="fvg-count">—</span>
+      </div>
+      <div class="fvg-list" id="fvg-list">
+        <div class="empty-state" style="height:36px;font-size:8px">RUN ANALYSIS FIRST</div>
+      </div>
+
+      <!-- ── MTF BIAS TABLE ─────────────────────────────────────
+           NEW BLOCK. Rendered entirely by renderMTFBiasTable() in
+           app.js. The inner panel-hd + .mtf-table are injected by JS.
+           This element just provides the mount point + a border-top
+           separator from the FVG section above.
+           CSS needed: .mtf-table, .mtf-header-row, .mtf-row,
+           .mtf-col-tf, .mtf-col-trend, .mtf-col-struct,
+           .mtf-col-level, .mtf-col-dist  — all in style.css.
+      ──────────────────────────────────────────────────────────── -->
+      <div id="mtf-bias-table">
+        <div class="panel-hd panel-hd-inner">
+          <span class="panel-hd-label">MULTI-TIMEFRAME BIAS</span>
+        </div>
+        <div class="empty-state" style="height:40px;font-size:8px">RUN ANALYSIS FIRST</div>
+      </div>
+
+      <!-- Key S/R Levels -->
+      <div class="panel-hd panel-hd-inner">
+        <span class="panel-hd-label">KEY S/R LEVELS</span>
+        <span class="panel-hd-sub">NEAREST 10</span>
+      </div>
+      <div class="levels-row" id="sr-levels">
+        <div class="empty-state" style="height:40px;font-size:8px">RUN ANALYSIS FIRST</div>
+      </div>
+
+      <!-- Mini analytics -->
+      <div class="panel-hd panel-hd-inner">
+        <span class="panel-hd-label">MINI ANALYTICS</span>
+      </div>
+      <div id="mini-chart-row">
+        <div class="mini-panel">
+          <div class="mini-panel-label">Funding History</div>
+          <div id="funding-mini"></div>
+        </div>
+        <div class="mini-panel">
+          <div class="mini-panel-label">Open Interest</div>
+          <div id="oi-mini"></div>
+        </div>
+        <div class="mini-panel">
+          <div class="mini-panel-label">Liquidation Levels</div>
+          <div id="liq-mini"></div>
+        </div>
+      </div>
+
+    </div><!-- /panel-struct -->
+
+    <!-- ══ RIGHT: TRADE SETUP ════════════════════════════════════
+         CHANGES:
+           • Decision strip ds-val font-size bumped to 13px in CSS.
+           • #scenarios-wrap receives new large trade card markup
+             from populateTradePanel() in app.js — no HTML changes
+             needed here, JS writes the full interior.
+           • #conf-hd and #conf-breakdown removed entirely.
+             Confluence checklist is now always embedded inside
+             #scenarios-wrap by populateTradePanel().
+    ════════════════════════════════════════════════════════════ -->
+    <div class="a-panel" id="panel-trade">
+
+      <div class="panel-hd">
+        <span class="panel-hd-label">TRADE SCENARIOS</span>
+      </div>
+
+      <!-- Decision strip — always visible at top of right panel.
+           CHANGE: ds-val gets font-size:13px in style.css (was 11px).
+           ds-slot-wide for invalidation kept. -->
+      <div id="decision-strip">
+        <div class="ds-slot" id="ds-bias-slot">
+          <div class="ds-label">BIAS</div>
+          <div class="ds-val" id="ds-bias">—</div>
+        </div>
+        <div class="ds-sep"></div>
+        <div class="ds-slot">
+          <div class="ds-label">ENTRY</div>
+          <div class="ds-val" id="ds-entry">—</div>
+        </div>
+        <div class="ds-sep"></div>
+        <div class="ds-slot">
+          <div class="ds-label">STOP LOSS</div>
+          <div class="ds-val ds-red" id="ds-sl">—</div>
+        </div>
+        <div class="ds-sep"></div>
+        <div class="ds-slot">
+          <div class="ds-label">TP1 / TP2 / TP3</div>
+          <div class="ds-val ds-green" id="ds-tp">— / — / —</div>
+        </div>
+        <div class="ds-sep"></div>
+        <div class="ds-slot ds-slot-wide">
+          <div class="ds-label">INVALIDATION</div>
+          <div class="ds-val ds-warn" id="ds-invalid">—</div>
+        </div>
+      </div>
+
+      <!-- Setup content — populated entirely by populateTradePanel()
+           in app.js. Includes: direction header, ENTRY card, SL card,
+           TP1/TP2/TP3 3-col grid, ATR row, invalidation block,
+           bull/bear scenario 2-col, confluence checklist. -->
+      <div id="scenarios-wrap">
+        <div class="empty-state" style="padding:40px 20px;text-align:center">
+          <div class="empty-glyph">◎</div>
+          ENTER A TICKER AND RUN ANALYSIS<br>
+          <span style="font-size:8px;color:var(--muted);margin-top:6px;display:block">
+            Trade setup, entry zones, and confluence will appear here
+          </span>
+        </div>
+      </div>
+
+      <!-- REMOVED: #conf-hd and #conf-breakdown.
+           Confluence is now always embedded inside #scenarios-wrap.
+           Keeping hidden stubs here would cause JS to find them and
+           try to hide them (populateTradePanel does: confHd.style.display='none')
+           so we remove them entirely. -->
+
+    </div><!-- /panel-trade -->
+
+  </div><!-- /analysis-grid -->
+</div><!-- /stage-analysis -->
+
+<!-- ══ SMC SCANNER STAGE ════════════════════════════════════════ -->
+<div id="stage-smc" style="display:none">
+
+  <!-- Scanner control strip -->
+  <div id="smc-controls">
+    <!-- Row 1: toggles -->
+    <div class="smc-ctrl-row smc-ctrl-row--toggles">
+      <div class="smc-ctrl-group">
+        <span class="smc-ctrl-label">EXCHANGE</span>
+        <div class="smc-toggle-group" id="smc-exchange-toggle">
+          <button class="smc-toggle active" data-val="bybit">BYBIT</button>
+          <button class="smc-toggle" data-val="binance">BINANCE</button>
+        </div>
+      </div>
+      <div class="smc-ctrl-sep"></div>
+      <div class="smc-ctrl-group">
+        <span class="smc-ctrl-label">TIMEFRAME</span>
+        <div class="smc-toggle-group" id="smc-tf-toggle">
+          <button class="smc-toggle" data-val="15m">15M</button>
+          <button class="smc-toggle active" data-val="1h">1H</button>
+          <button class="smc-toggle" data-val="4h">4H</button>
+          <button class="smc-toggle" data-val="1d">1D</button>
+          <button class="smc-toggle" data-val="1w">1W</button>
+        </div>
+      </div>
+    </div>
+    <!-- Row 2: action buttons + status -->
+    <div class="smc-ctrl-row smc-ctrl-row--actions">
+      <button id="smc-scan-btn">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+        SCAN MARKET
+      </button>
+      <button id="smc-common-scan-btn">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
+        </svg>
+        COMMON SCAN
+      </button>
+      <button id="smc-abort-btn" style="display:none">ABORT</button>
+      <div id="smc-status"></div>
+    </div>
+  </div>
+
+  <!-- Legend -->
+  <div id="smc-legend">
+    <span class="smc-legend-label">SCORE</span>
+    <span class="smc-legend-item" style="color:#00e676">■ 7/7 PRIME</span>
+    <span class="smc-legend-item" style="color:#69f0ae">■ 6/7 HIGH</span>
+    <span class="smc-legend-sep"></span>
+    <span class="smc-legend-note">HOVER CELL FOR GATE BREAKDOWN · ONLY 6/7 AND 7/7 SHOWN</span>
+  </div>
+
+  <!-- Heatmap output -->
+  <div id="smc-heatmap">
+    <div class="smc-empty">
+      <div class="smc-empty-glyph">◎</div>
+      <div>SELECT EXCHANGE + TIMEFRAME AND PRESS SCAN</div>
+      <div style="font-size:9px;color:var(--muted);margin-top:6px">
+        All USDT perpetual pairs will be scanned through the 7-gate SMC engine
+      </div>
+    </div>
+  </div>
+
+</div><!-- /stage-smc -->
+
+<!-- ══ FUNDING RATE SCANNER STAGE ══════════════════════════════ -->
+<div id="stage-funding" style="display:none">
+
+  <!-- Controls -->
+  <div id="fr-controls">
+    <!-- Row 1: Exchange tabs -->
+    <div class="fr-ctrl-row fr-ctrl-row--tabs">
+      <span class="smc-ctrl-label">EXCHANGE</span>
+      <div class="fr-tab-group" id="fr-exchange-tabs">
+        <button class="fr-tab active" data-val="bybit">BYBIT</button>
+        <button class="fr-tab" data-val="binance">BINANCE</button>
+        <button class="fr-tab fr-tab--common" data-val="common">◈ COMMON</button>
+      </div>
+    </div>
+    <!-- Row 2: Filter pills (hidden during common scan) -->
+    <div class="fr-ctrl-row fr-ctrl-row--filters" id="fr-filter-row">
+      <span class="smc-ctrl-label">FILTER</span>
+      <div class="fr-filter-group">
+        <button class="fr-filter active" data-filter="all">ALL <span class="fr-pill-count">0</span></button>
+        <button class="fr-filter fr-filter--neg" data-filter="negative">▼ NEGATIVE <span class="fr-pill-count">0</span></button>
+        <button class="fr-filter fr-filter--pos" data-filter="positive">▲ POSITIVE <span class="fr-pill-count">0</span></button>
+      </div>
+    </div>
+    <!-- Row 3: Scan button -->
+    <div class="fr-ctrl-row fr-ctrl-row--btn">
+      <button id="fr-scan-btn">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+          <line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+        </svg>
+        SCAN FUNDING
+      </button>
+      <button id="fr-abort-btn" style="display:none">ABORT</button>
+    </div>
+    <!-- Row 4: Status -->
+    <div class="fr-ctrl-row fr-ctrl-row--status">
+      <div id="fr-status"></div>
+    </div>
+  </div>
+
+  <!-- Legend -->
+  <div id="fr-legend">
+    <span class="smc-legend-label">THRESHOLD</span>
+    <span class="smc-legend-item" style="color:#00e676">▼ ≤ −0.05% NEGATIVE</span>
+    <span class="smc-legend-item" style="color:#ff4444">▲ ≥ +0.05% POSITIVE</span>
+    <span class="smc-legend-sep"></span>
+    <span class="smc-legend-note">FUNDING RATE IMBALANCE SCANNER · ALL USDT PERPS</span>
+  </div>
+
+  <!-- Results grid -->
+  <div id="fr-grid">
+    <div class="fr-empty">
+      <div class="fr-empty-glyph">◎</div>
+      <div>SELECT EXCHANGE AND PRESS SCAN</div>
+      <div style="font-size:9px;color:var(--muted);margin-top:6px">
+        Pairs with funding ≥ +0.05% or ≤ −0.05% will appear here
+      </div>
+    </div>
+  </div>
+
+</div><!-- /stage-funding -->
+<!-- ══ DERIVATIVES CONFLUENCE SCANNER STAGE ════════════════════ -->
+<div id="stage-deriv" style="display:none">
+
+  <!-- Controls -->
+  <div id="ds-controls">
+    <!-- Row 1: Exchange + TF toggles -->
+    <div class="smc-ctrl-row smc-ctrl-row--toggles">
+      <div class="smc-ctrl-group">
+        <span class="smc-ctrl-label">EXCHANGE</span>
+        <div class="smc-toggle-group" id="ds-exchange-toggle">
+          <button class="smc-toggle active" data-val="bybit">BYBIT</button>
+          <button class="smc-toggle" data-val="binance">BINANCE</button>
+        </div>
+      </div>
+      <div class="smc-ctrl-sep"></div>
+      <div class="smc-ctrl-group">
+        <span class="smc-ctrl-label">TIMEFRAME</span>
+        <div class="smc-toggle-group" id="ds-tf-toggle">
+          <button class="smc-toggle" data-val="15m">15M</button>
+          <button class="smc-toggle active" data-val="1h">1H</button>
+          <button class="smc-toggle" data-val="4h">4H</button>
+          <button class="smc-toggle" data-val="1d">1D</button>
+        </div>
+      </div>
+    </div>
+    <!-- Row 2: Filter pills -->
+    <div class="smc-ctrl-row" id="ds-filter-row" style="gap:6px;padding-top:6px;flex-wrap:wrap">
+      <span class="smc-ctrl-label">FILTER</span>
+      <div style="display:flex;gap:4px;flex-wrap:wrap">
+        <button class="ds-filter active" data-filter="all">ALL <span class="ds-pill-count">0</span></button>
+        <button class="ds-filter ds-filter--long" data-filter="long">⬆ LONG <span class="ds-pill-count">0</span></button>
+        <button class="ds-filter ds-filter--short" data-filter="short">⬇ SHORT <span class="ds-pill-count">0</span></button>
+        <button class="ds-filter ds-filter--prime" data-filter="prime">◈ PRIME <span class="ds-pill-count">0</span></button>
+      </div>
+    </div>
+    <!-- Row 3: Scan button + status -->
+    <div class="smc-ctrl-row smc-ctrl-row--actions">
+      <button id="ds-scan-btn">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+          <path d="M2 20h20M6 20V10M10 20V4M14 20V14M18 20V8"/>
+        </svg>
+        SCAN — 3-GATE FUNNEL
+      </button>
+      <button id="ds-abort-btn" style="display:none">ABORT</button>
+      <div id="ds-status"></div>
+    </div>
+  </div>
+
+  <!-- Legend -->
+  <div class="ds-legend">
+    <span class="smc-legend-label">GATES</span>
+    <span class="smc-legend-item" style="color:var(--green)">① SMC Structure</span>
+    <span class="smc-legend-item" style="color:var(--gold)">② Funding Alignment</span>
+    <span class="smc-legend-item" style="color:var(--blue)">③ Deriv Score ≥58 / ≤42</span>
+    <span class="smc-legend-sep"></span>
+    <span class="smc-legend-note">ALL 3 GATES MUST PASS · CONVICTION = SMC×40% + DERIV×40% + FUNDING×20%</span>
+  </div>
+
+  <!-- Results container -->
+  <div id="ds-results">
+    <div class="ds-empty">
+      <div class="ds-empty-glyph">◈</div>
+      <div>SELECT EXCHANGE + TIMEFRAME AND PRESS SCAN</div>
+      <div style="font-size:9px;color:var(--muted);margin-top:6px;max-width:320px;text-align:center">
+        Only coins passing all 3 gates will appear · SMC Structure · Funding · Derivatives Intelligence
+      </div>
+    </div>
+  </div>
+
+</div><!-- /stage-deriv -->
+
+</div><!-- /stage -->
+
+<!-- ══ LOADING OVERLAY ═════════════════════════════════════════ -->
+<div id="loading-overlay">
+  <div class="loading-ring"></div>
+  <div class="loading-text">ATL ANALYZER</div>
+  <div class="loading-sub" id="loading-sub-text">INITIALISING…</div>
+</div>
+
+<!-- ══ ERROR BANNER ═══════════════════════════════════════════ -->
+<div id="error-banner">
+  <span id="error-text">Error</span>
+</div>
+
+<script type="module" src="app.js"></script>
+<script type="module" src="smc-scanner-ui.js"></script>
+<script type="module" src="funding-scanner-ui.js"></script>
+<script type="module" src="deriv-scanner-ui.js"></script>
+</body>
+</html>
