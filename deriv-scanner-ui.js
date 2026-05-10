@@ -136,34 +136,65 @@ function updateRing(pct) {
 function startScan() {
   scanResults = [];
 
+  // ── Gate strip: fixed above ds-results, never wiped by results rendering ──
+  const stageEl = $('stage-deriv');
+  let gateStrip = $('ds-gate-strip-fixed');
+
+  // Remove old strip if re-scanning
+  if (gateStrip) gateStrip.remove();
+  gateStrip = document.createElement('div');
+  gateStrip.id = 'ds-gate-strip-fixed';
+  gateStrip.className = 'ds-gate-strip-fixed';
+  gateStrip.innerHTML = `
+    <div class="ds-strip-header">
+      <div class="smc-progress-ring" id="ds-progress-ring" style="width:32px;height:32px;flex-shrink:0;border-radius:50%"></div>
+      <div style="flex:1;min-width:0">
+        <div id="ds-progress-text" class="smc-progress-text">Initialising 3-gate funnel…</div>
+        <div id="ds-scan-sub" style="font-size:8px;color:var(--muted);margin-top:2px;font-family:var(--font-mono)">Fetching pairs + funding intervals + insurance fund</div>
+      </div>
+    </div>
+    <div class="ds-gate-rows">
+      ${[
+        { num: 1, label: 'Gate 1 · SMC Pre-screen',    sub: 'HTF structure · P/D zone · OB proximity' },
+        { num: 2, label: 'Gate 2 · Funding Alignment', sub: 'Normalised rate · contrarian imbalance ≥ 0.10%/8h' },
+        { num: 3, label: 'Gate 3 · Deriv Score',       sub: 'calcDerivScore ≥ 58 long / ≤ 42 short' },
+      ].map(g => `
+        <div class="ds-gate-row" id="ds-gate-row-${g.num}">
+          <div class="ds-gate-row-left">
+            <span class="ds-gate-icon" id="ds-gate-icon-${g.num}">○</span>
+            <div>
+              <div class="ds-gate-label">${g.label}</div>
+              <div class="ds-gate-sub">${g.sub}</div>
+            </div>
+          </div>
+          <div class="ds-gate-row-right">
+            <span class="ds-gate-count" id="ds-gate-count-${g.num}">waiting</span>
+            <div class="ds-gate-bar-wrap">
+              <div class="ds-gate-bar" id="ds-gate-bar-${g.num}" style="width:0%"></div>
+            </div>
+          </div>
+        </div>`).join('')}
+    </div>`;
+
   const resultsEl = $('ds-results');
+  if (resultsEl && stageEl) stageEl.insertBefore(gateStrip, resultsEl);
+
+  // ── Results area: show waiting state, separate from gate strip ──
   if (resultsEl) {
     resultsEl.innerHTML = `
-      <div class="smc-scan-progress">
-        <div class="smc-progress-ring" id="ds-progress-ring"></div>
-        <div id="ds-progress-text" class="smc-progress-text">Initialising 3-gate funnel…</div>
-      </div>
-      <div id="ds-gate-strip" class="ds-gate-strip">
-        ${['Gate 1 · SMC Pre-screen', 'Gate 2 · Funding Alignment', 'Gate 3 · Deriv Score'].map((label, i) => `
-          <div class="ds-gate-row" id="ds-gate-row-${i + 1}">
-            <span class="ds-gate-num">${i + 1}</span>
-            <span class="ds-gate-label">${label}</span>
-            <span class="ds-gate-count" id="ds-gate-count-${i + 1}">—</span>
-            <div class="ds-gate-bar-wrap">
-              <div class="ds-gate-bar" id="ds-gate-bar-${i + 1}" style="width:0%"></div>
-            </div>
-          </div>`).join('')}
+      <div class="ds-empty" id="ds-waiting-msg" style="min-height:120px">
+        <div class="ds-empty-glyph" style="font-size:20px;margin-bottom:8px">◈</div>
+        <div style="font-size:9px;letter-spacing:0.1em">RUNNING GATE 1 OF 3…</div>
       </div>`;
   }
 
   setScanningUI(true);
   setStatus(`Scanning ${selectedExchange === 'bybit' ? 'Bybit' : 'Binance'} · ${selectedTF.toUpperCase()} · 3-gate funnel`, '#ffd54f');
 
-  // Reset filter pills
   document.querySelectorAll('#ds-filter-row .ds-filter').forEach(b => b.classList.remove('active'));
   document.querySelector('#ds-filter-row .ds-filter[data-filter="all"]')?.classList.add('active');
 
-  let g1Total = 0, g2Total = 0, g3Total = 0;
+  let g1Passed = 0, g2Passed = 0, g1Total = 0;
 
   runDerivScan({
     exchange: selectedExchange,
@@ -171,74 +202,66 @@ function startScan() {
 
     onProgress({ phase, done, total, msg }) {
       const textEl = $('ds-progress-text');
+      const subEl  = $('ds-scan-sub');
       if (textEl) textEl.textContent = msg;
       setStatus(msg);
 
+      if (phase === 'init') {
+        if (subEl) subEl.textContent = 'Fetching pairs + funding intervals + insurance fund…';
+        return;
+      }
+
+      if (phase === 'start') {
+        g1Total = total;
+        if (subEl) subEl.textContent = `${total} pairs found — gate 1 starting`;
+        activateGateRow(1);
+        updateWaiting('Gate 1 · SMC pre-screen running…');
+        return;
+      }
+
       if (phase === 'gate1' && done && total) {
-        const pct = Math.round((done / total) * 33);
-        updateRing(pct);
-        const bar = $('ds-gate-bar-1');
-        if (bar) bar.style.width = `${Math.round((done / total) * 100)}%`;
-        // Extract passed count from msg
+        updateRing(Math.round((done / total) * 33));
+        setGateBar(1, Math.round((done / total) * 100));
         const m = msg.match(/(\d+) passed/);
-        if (m) {
-          g1Total = parseInt(m[1]);
-          const cnt = $('ds-gate-count-1');
-          if (cnt) cnt.textContent = `${g1Total} passed`;
-        }
-        const row = $('ds-gate-row-1');
-        if (row) row.classList.add('ds-gate-row--active');
+        if (m) { g1Passed = parseInt(m[1]); setGateCount(1, `${g1Passed} / ${total} passed`); }
+        else { setGateCount(1, `${done} / ${total} scanned`); }
+        updateWaiting(`Gate 1 · ${done}/${total} · ${g1Passed} passed SMC`);
+        return;
       }
 
       if (phase === 'gate2') {
-        updateRing(40);
+        // G1 done — mark complete, activate G2
+        completeGateRow(1, g1Passed);
+        activateGateRow(2);
+        updateRing(38);
         const m = msg.match(/(\d+) passed/);
         if (m) {
-          g2Total = parseInt(m[1]);
-          const cnt = $('ds-gate-count-2');
-          if (cnt) cnt.textContent = `${g2Total} passed`;
-          const bar = $('ds-gate-bar-2');
-          if (bar && g1Total > 0) bar.style.width = `${Math.round((g2Total / g1Total) * 100)}%`;
+          g2Passed = parseInt(m[1]);
+          setGateCount(2, `${g2Passed} / ${g1Passed} passed`);
+          setGateBar(2, g1Passed > 0 ? Math.round((g2Passed / g1Passed) * 100) : 0);
         }
-        const row = $('ds-gate-row-2');
-        if (row) row.classList.add('ds-gate-row--active');
+        completeGateRow(2, g2Passed);
+        activateGateRow(3);
+        if (subEl) subEl.textContent = `${g2Passed} coins reached gate 3 — scoring derivatives`;
+        updateWaiting(`Gate 2 complete · ${g2Passed} reached gate 3 · scoring derivatives…`);
+        return;
       }
 
       if (phase === 'gate3' && done && total) {
-        const pct = 40 + Math.round((done / total) * 60);
-        updateRing(pct);
+        updateRing(38 + Math.round((done / total) * 62));
+        setGateBar(3, Math.round((done / total) * 100));
         const m = msg.match(/(\d+) final/);
-        if (m) {
-          g3Total = parseInt(m[1]);
-          const cnt = $('ds-gate-count-3');
-          if (cnt) cnt.textContent = `${g3Total} qualified`;
-          const bar = $('ds-gate-bar-3');
-          if (bar && g2Total > 0) bar.style.width = `${Math.round((g3Total / g2Total) * 100)}%`;
-        }
-        const row = $('ds-gate-row-3');
-        if (row) row.classList.add('ds-gate-row--active');
+        const qualified = m ? parseInt(m[1]) : scanResults.length;
+        setGateCount(3, `${qualified} / ${total} qualified`);
+        updateWaiting(`Gate 3 · ${done}/${total} scored · ${qualified} qualified`);
+        return;
       }
     },
 
     onResult(result) {
+      // Accumulate only — do NOT render yet, gate strip must stay visible
       scanResults.push(result);
-      // Stream into results as they arrive — replace gate strip area
-      if (!$('ds-live-grid')) {
-        const resultsEl = $('ds-results');
-        if (resultsEl) {
-          // Keep gate strip, add live grid below
-          const liveGrid = document.createElement('div');
-          liveGrid.id = 'ds-live-grid';
-          liveGrid.className = 'ds-result-grid';
-          resultsEl.appendChild(liveGrid);
-        }
-      }
-      const grid = $('ds-live-grid');
-      if (grid) {
-        const card = document.createElement('div');
-        card.innerHTML = buildResultCard(result);
-        grid.appendChild(card.firstElementChild);
-      }
+      updateWaiting(`Gate 3 running · ${scanResults.length} qualified so far`);
     },
 
     onDone({ results, total, aborted }) {
@@ -246,32 +269,102 @@ function startScan() {
       scanResults = results;
       updateRing(100);
 
-      const longs  = results.filter(r => r.dir === 'bull').length;
-      const shorts = results.filter(r => r.dir === 'bear').length;
-      const prime  = results.filter(r => r.convLabel === 'PRIME').length;
+      // Mark gate 3 complete with final count
+      completeGateRow(3, results.length);
 
+      // Update strip sub-text with final summary
+      const subEl = $('ds-scan-sub');
+      const textEl = $('ds-progress-text');
+      if (textEl) textEl.textContent = aborted ? 'Scan aborted' : 'Scan complete';
+
+      if (subEl) {
+        if (aborted) {
+          subEl.textContent = `Aborted · ${results.length} coins passed all gates`;
+          subEl.style.color = '#ffd54f';
+        } else if (!results.length) {
+          subEl.textContent = `No coins passed all 3 gates on this scan`;
+          subEl.style.color = '#ffd54f';
+        } else {
+          const longs  = results.filter(r => r.dir === 'bull').length;
+          const shorts = results.filter(r => r.dir === 'bear').length;
+          const prime  = results.filter(r => r.convLabel === 'PRIME').length;
+          subEl.textContent = `${results.length} coins passed all gates · ${prime} PRIME · ${longs}↑ ${shorts}↓`;
+          subEl.style.color = '#00e676';
+        }
+      }
+
+      // Status bar
       if (aborted) {
         setStatus(`Aborted · ${results.length} coins passed all 3 gates`, '#ffd54f');
       } else if (!results.length) {
-        setStatus(`Scan complete · ${total} pairs scanned · No coins passed all 3 gates`, '#ffd54f');
-        renderEmpty('No coins passed all 3 gates on this scan');
+        setStatus(`Scan complete · ${total} scanned · No coins passed all 3 gates`, '#ffd54f');
       } else {
-        setStatus(
-          `Done · ${total} scanned · ${results.length} passed all gates · ${prime} PRIME · ${longs}↑ ${shorts}↓`,
-          '#00e676'
-        );
-        renderResults(results, 'all');
+        const longs  = results.filter(r => r.dir === 'bull').length;
+        const shorts = results.filter(r => r.dir === 'bear').length;
+        const prime  = results.filter(r => r.convLabel === 'PRIME').length;
+        setStatus(`Done · ${total} scanned · ${results.length} passed · ${prime} PRIME · ${longs}↑ ${shorts}↓`, '#00e676');
       }
+
+      // Hold gate strip visible for 2.5s so user can read the summary, then show results
+      setTimeout(() => {
+        const gs = $('ds-gate-strip-fixed');
+        if (gs) gs.classList.add('ds-gate-strip--collapsed');
+        setTimeout(() => {
+          const gs2 = $('ds-gate-strip-fixed');
+          if (gs2) gs2.style.display = 'none';
+          if (!results.length) {
+            renderEmpty(aborted ? 'Scan aborted' : 'No coins passed all 3 gates on this scan');
+          } else {
+            renderResults(results, 'all');
+          }
+        }, 320);
+      }, 2500);
 
       window.__atlSetStatus?.('live');
     },
 
     onError(msg) {
       setScanningUI(false);
+      const gs = $('ds-gate-strip-fixed');
+      if (gs) gs.style.display = 'none';
       setStatus(`Error: ${msg}`, '#ff4444');
       renderEmpty(`Error: ${msg}`);
     },
   });
+}
+
+// ── Gate strip helpers ─────────────────────────────────────────
+function activateGateRow(num) {
+  const row  = $(`ds-gate-row-${num}`);
+  const icon = $(`ds-gate-icon-${num}`);
+  if (row)  row.classList.add('ds-gate-row--active');
+  if (icon) { icon.textContent = '●'; icon.style.color = '#ffd54f'; }
+}
+
+function completeGateRow(num, passCount) {
+  const row  = $(`ds-gate-row-${num}`);
+  const icon = $(`ds-gate-icon-${num}`);
+  if (row)  { row.classList.remove('ds-gate-row--active'); row.classList.add('ds-gate-row--done'); }
+  if (icon) { icon.textContent = '✓'; icon.style.color = '#00e676'; }
+  setGateBar(num, 100);
+  if (passCount != null) setGateCount(num, `${passCount} passed`);
+}
+
+function setGateBar(num, pct) {
+  const bar = $(`ds-gate-bar-${num}`);
+  if (bar) bar.style.width = `${pct}%`;
+}
+
+function setGateCount(num, text) {
+  const cnt = $(`ds-gate-count-${num}`);
+  if (cnt) cnt.textContent = text;
+}
+
+function updateWaiting(text) {
+  const el = $('ds-waiting-msg');
+  if (!el) return;
+  const sub = el.querySelector('div:last-child');
+  if (sub) sub.textContent = text;
 }
 
 // ═══════════════════════════════════════════════════════════════
