@@ -2864,3 +2864,18 @@ body {
   .ds-gate-sub { display: none; } /* save vertical space on mobile */
   .ds-strip-header { padding: 8px 12px; gap: 8px; }
 }
+
+/* ── Progress ring size fix for gate strip (32×32 variant) ──── */
+/* The default smc-progress-ring is 56px with a 44px inner disc.
+   In the gate strip we render it at 32px — need the inner disc
+   to scale proportionally or it covers the ring entirely. */
+.ds-strip-header .smc-progress-ring {
+  width: 32px !important;
+  height: 32px !important;
+  background: conic-gradient(var(--bg3) 0deg, var(--bg3) 0deg);
+}
+.ds-strip-header .smc-progress-ring::after {
+  width: 24px !important;
+  height: 24px !important;
+  background: var(--bg2) !important;
+}
