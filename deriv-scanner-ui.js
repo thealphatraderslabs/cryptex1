@@ -147,7 +147,7 @@ function startScan() {
   gateStrip.className = 'ds-gate-strip-fixed';
   gateStrip.innerHTML = `
     <div class="ds-strip-header">
-      <div class="smc-progress-ring" id="ds-progress-ring" style="width:32px;height:32px;flex-shrink:0;border-radius:50%"></div>
+      <div class="smc-progress-ring" id="ds-progress-ring"></div>
       <div style="flex:1;min-width:0">
         <div id="ds-progress-text" class="smc-progress-text">Initialising 3-gate funnel…</div>
         <div id="ds-scan-sub" style="font-size:8px;color:var(--muted);margin-top:2px;font-family:var(--font-mono)">Fetching pairs + funding intervals + insurance fund</div>
@@ -155,9 +155,9 @@ function startScan() {
     </div>
     <div class="ds-gate-rows">
       ${[
-        { num: 1, label: 'Gate 1 · SMC Pre-screen',    sub: 'HTF structure · P/D zone · OB proximity' },
-        { num: 2, label: 'Gate 2 · Funding Alignment', sub: 'Normalised rate · contrarian imbalance ≥ 0.10%/8h' },
-        { num: 3, label: 'Gate 3 · Deriv Score',       sub: 'calcDerivScore ≥ 58 long / ≤ 42 short' },
+        { num: 1, label: 'Gate 1 · Structure + Compression', sub: 'ATR coiling · Price at key level · No recent BOS · HTF direction' },
+        { num: 2, label: 'Gate 2 · OI + CVD Loading',        sub: 'OI rising while price flat · CVD taker bias matching direction' },
+        { num: 3, label: 'Gate 3 · Deriv Score',             sub: 'derivScore ≥ 58 long / ≤ 42 short (funding excluded from score)' },
       ].map(g => `
         <div class="ds-gate-row" id="ds-gate-row-${g.num}">
           <div class="ds-gate-row-left">
@@ -215,7 +215,7 @@ function startScan() {
         g1Total = total;
         if (subEl) subEl.textContent = `${total} pairs found — gate 1 starting`;
         activateGateRow(1);
-        updateWaiting('Gate 1 · SMC pre-screen running…');
+        updateWaiting('Gate 1 · Structure compression check running…');
         return;
       }
 
@@ -225,15 +225,24 @@ function startScan() {
         const m = msg.match(/(\d+) passed/);
         if (m) { g1Passed = parseInt(m[1]); setGateCount(1, `${g1Passed} / ${total} passed`); }
         else { setGateCount(1, `${done} / ${total} scanned`); }
-        updateWaiting(`Gate 1 · ${done}/${total} · ${g1Passed} passed SMC`);
+        updateWaiting(`Gate 1 · ${done}/${total} · ${g1Passed} passed structure check`);
+        return;
+      }
+
+      if (phase === 'gate2_start') {
+        // Gate 1 fully done — mark it, activate gate 2 row
+        completeGateRow(1, g1Passed);
+        activateGateRow(2);
+        updateRing(38);
+        setGateCount(2, `evaluating ${done === 0 ? total : done} qualifiers…`);
+        if (subEl) subEl.textContent = `Gate 1 complete · ${g1Passed} passed · checking OI + CVD`;
+        updateWaiting(`Gate 2 · OI divergence + CVD check on ${total} coins…`);
         return;
       }
 
       if (phase === 'gate2') {
-        // G1 done — mark complete, activate G2
-        completeGateRow(1, g1Passed);
-        activateGateRow(2);
-        updateRing(38);
+        // Gate 2 evaluation complete — mark it done, activate gate 3
+        updateRing(50);
         const m = msg.match(/(\d+) passed/);
         if (m) {
           g2Passed = parseInt(m[1]);
@@ -431,69 +440,86 @@ function renderResults(results, filter = 'all') {
 //    • OI trend + basis direction + spread
 // ═══════════════════════════════════════════════════════════════
 function buildResultCard(r) {
-  const isLong   = r.dir === 'bull';
+  const isLong    = r.dir === 'bull';
   const accentCol = isLong ? '#00e676' : '#ff4444';
   const bgAccent  = isLong ? 'rgba(0,230,118,0.06)' : 'rgba(255,68,68,0.06)';
 
-  // Gate rows
+  // ── Gate rows — Structure / OI+CVD / Deriv ────────────────
   const gateRows = [
-    { label: 'SMC',       pass: r.g1.pass, detail: r.g1.reason,  extra: `SMC ${r.g1.smcScore}/3` },
-    { label: 'FUNDING',   pass: r.g2.pass, detail: r.g2.reason,  extra: r.fundingStr },
-    { label: 'DERIV',     pass: r.g3.pass, detail: r.g3.reason,  extra: `Score ${r.derivScore}/100` },
+    {
+      label:  'STRUCTURE',
+      pass:   r.g1.pass,
+      extra:  `ATR ${r.g1.atrRatio != null ? (r.g1.atrRatio * 100).toFixed(0) + '%' : '—'} · SMC ${r.g1.smcScore}/4`,
+      detail: r.g1.reason,
+    },
+    {
+      label:  'OI + CVD',
+      pass:   r.g2.pass,
+      extra:  `OI ${r.g2.oiDelta != null ? (r.g2.oiDelta > 0 ? '+' : '') + r.g2.oiDelta.toFixed(1) + '%' : '—'} · CVD ${r.g2.cvdBias != null ? (r.g2.cvdBias > 0 ? '+' : '') + r.g2.cvdBias.toFixed(1) + '%' : '—'}`,
+      detail: r.g2.reason,
+    },
+    {
+      label:  'DERIV',
+      pass:   r.g3.pass,
+      extra:  `Score ${r.derivScore}/100`,
+      detail: r.g3.reason,
+    },
   ].map(g => `
     <div class="ds-card-gate ${g.pass ? 'ds-gate-pass' : 'ds-gate-fail'}">
       <span class="ds-gate-icon">${g.pass ? '✓' : '✗'}</span>
       <span class="ds-gate-name">${g.label}</span>
       <span class="ds-gate-extra">${g.extra}</span>
-      <span class="ds-gate-detail">${g.desc || g.detail}</span>
+      <span class="ds-gate-detail">${g.detail}</span>
     </div>`).join('');
 
-  // Deriv score bar
+  // ── Deriv score ────────────────────────────────────────────
   const dsCol   = r.derivColor || '#ffd54f';
   const dsWidth = r.derivScore;
 
-  // Component bars (compact)
+  // ── Component bars — skip funding (weight 0) ──────────────
   const compRows = r.components
-    ? Object.entries(r.components).map(([k, c]) => {
-        const col = c.score >= 60 ? '#00e676' : c.score <= 40 ? '#ff4444' : '#ffd54f';
-        return `<div class="ds-comp-row">
-          <span class="ds-comp-label">${c.label}</span>
-          <div class="ds-comp-bar-wrap">
-            <div class="ds-comp-bar" style="width:${c.score}%;background:${col}"></div>
-          </div>
-          <span class="ds-comp-score" style="color:${col}">${c.score}</span>
-        </div>`;
-      }).join('')
+    ? Object.entries(r.components)
+        .filter(([k]) => k !== 'funding')
+        .map(([k, c]) => {
+          const col = c.score >= 60 ? '#00e676' : c.score <= 40 ? '#ff4444' : '#ffd54f';
+          return `<div class="ds-comp-row">
+            <span class="ds-comp-label">${c.label}</span>
+            <div class="ds-comp-bar-wrap">
+              <div class="ds-comp-bar" style="width:${c.score}%;background:${col}"></div>
+            </div>
+            <span class="ds-comp-score" style="color:${col}">${c.score}</span>
+          </div>`;
+        }).join('')
     : '';
 
-  // OI trend tag
+  // ── Signal tags ────────────────────────────────────────────
   const oiTag = r.oiTrend === 'rising'
     ? `<span class="ds-tag ds-tag--green">OI ▲</span>`
     : r.oiTrend === 'falling'
     ? `<span class="ds-tag ds-tag--red">OI ▼</span>`
     : '';
-
-  // Basis tag
+  const cvdTag = r.g2.cvdDirection === 'bullish'
+    ? `<span class="ds-tag ds-tag--green">CVD BULL</span>`
+    : r.g2.cvdDirection === 'bearish'
+    ? `<span class="ds-tag ds-tag--red">CVD BEAR</span>`
+    : '';
   const basisTag = r.basisDir === 'contracting'
     ? `<span class="ds-tag ds-tag--green">BASIS ↘</span>`
     : r.basisDir === 'expanding'
     ? `<span class="ds-tag ds-tag--red">BASIS ↗</span>`
     : `<span class="ds-tag ds-tag--muted">BASIS —</span>`;
-
-  // Insurance stress
   const insStress = r.insuranceTrend?.stressed
-    ? `<span class="ds-tag ds-tag--red">⚠ INSUR STRESS</span>`
-    : '';
-
-  // Spread tag
+    ? `<span class="ds-tag ds-tag--red">⚠ INSUR</span>` : '';
   const spreadTag = r.spread != null
-    ? `<span class="ds-tag ds-tag--muted">SPR ${r.spread.toFixed(3)}%</span>`
-    : '';
+    ? `<span class="ds-tag ds-tag--muted">SPR ${r.spread.toFixed(3)}%</span>` : '';
+
+  // ── Funding — display only, no gate icon ──────────────────
+  const frCol = r.frColor || '#8892a0';
 
   return `
     <div class="ds-card" style="--ds-accent:${accentCol};--ds-bg:${bgAccent}">
 
-      <!-- Card header -->
+      <!-- Header: ticker + bias + conviction + price -->
       <div class="ds-card-header">
         <div class="ds-card-left">
           <span class="ds-card-ticker">${r.symbol}</span>
@@ -507,12 +533,11 @@ function buildResultCard(r) {
         </div>
       </div>
 
-      <!-- Funding row -->
+      <!-- Funding info — context only, no ✓/✗ -->
       <div class="ds-card-funding">
         <span class="ds-funding-label">FUNDING</span>
-        <span class="ds-funding-val" style="color:${r.fundingDir === 'negative' ? '#00e676' : r.fundingDir === 'positive' ? '#ff4444' : '#ffd54f'}">
-          ${r.fundingStr}
-        </span>
+        <span class="ds-funding-val" style="color:${frCol}">${r.fundingStr}</span>
+        <span class="ds-funding-info">${r.frLabel} · INFO ONLY</span>
       </div>
 
       <!-- 3-gate breakdown -->
@@ -521,7 +546,7 @@ function buildResultCard(r) {
       <!-- Deriv score gauge -->
       <div class="ds-card-deriv">
         <div class="ds-deriv-header">
-          <span class="ds-deriv-label">DERIV SCORE</span>
+          <span class="ds-deriv-label">DERIV SCORE · OI 35% · BASIS 30% · TAKER 15% · INSUR 10% · SPR 5%</span>
           <span class="ds-deriv-val" style="color:${dsCol}">${r.derivScore}/100 · ${r.derivLabel}</span>
         </div>
         <div class="ds-deriv-bar-wrap">
@@ -530,9 +555,9 @@ function buildResultCard(r) {
         <div class="ds-comp-grid">${compRows}</div>
       </div>
 
-      <!-- Signal tags row -->
+      <!-- Signal tags -->
       <div class="ds-card-tags">
-        ${oiTag}${basisTag}${insStress}${spreadTag}
+        ${oiTag}${cvdTag}${basisTag}${insStress}${spreadTag}
       </div>
 
     </div>`;
