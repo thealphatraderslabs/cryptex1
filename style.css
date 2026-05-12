@@ -2879,3 +2879,11 @@ body {
   height: 24px !important;
   background: var(--bg2) !important;
 }
+
+/* ── Phase 5 v2 — funding info label in card ─────────────────── */
+.ds-funding-info {
+  font-family: var(--font-mono);
+  font-size: 7px; color: var(--muted);
+  letter-spacing: 0.08em; margin-left: auto;
+  text-transform: uppercase;
+}
