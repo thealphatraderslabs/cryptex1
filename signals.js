@@ -385,22 +385,23 @@ function scoreOrderBook(analysis) {
 //  Returns { derivScore, derivLabel, derivColor, components }
 // ═══════════════════════════════════════════════════════════════
 function calcDerivScore(data, analysis) {
-  // Phase 5 weight redistribution — funding removed from scoring:
-  //   OI Flow:   25% → 35%  (primary derivative signal)
-  //   Basis:     20% → 30%  (futures positioning vs spot)
-  //   Taker:     15% → 15%  (unchanged)
-  //   Insurance: 10% → 10%  (unchanged)
-  //   Spread:     5% →  5%  (unchanged)
-  //   Funding:   25% →  0%  (fixed at 50 — display only, no directional effect)
-  //   Total:    100% = 100%
+  // Funding is NOT part of this score at all.
+  // It is shown on cards as raw information after the scan.
+  // It has no weight, no component entry, no effect on derivScore.
+  //
+  // Weight distribution (sums to 100):
+  //   OI Flow:   35%
+  //   Basis:     30%
+  //   Taker:     15%
+  //   Insurance: 10%
+  //   Spread:     5%
+  //   Funding:    0%  — completely absent from calculation
 
-  const { ticker, oiHistory, takerFlow, basisHistory, bookTicker } = data;
+  const { oiHistory, takerFlow, basisHistory, bookTicker } = data;
 
   const components = {};
   let totalWeighted = 0;
 
-  // Helper: clamp raw score [−1, +1] → 0–100
-  // Neutral = 50, fully bullish = 100, fully bearish = 0
   function toComponent(raw, weight) {
     const clamped  = Math.max(-1, Math.min(1, raw));
     const out100   = Math.round((clamped + 1) / 2 * 100);
@@ -408,18 +409,7 @@ function calcDerivScore(data, analysis) {
     return out100;
   }
 
-  // ── 1. Funding — FIXED AT 50, zero directional effect (0%) ──
-  // Funding is display-only in Phase 5. It is still shown on cards
-  // as context but contributes nothing to the score direction.
-  // Fixed at 50 (neutral) so totalWeighted is unaffected.
-  components.funding = { score: 50, weight: 0, label: 'Funding' };
-  // No toComponent call — weight is 0, totalWeighted stays clean
-
-  // ── 2. OI + price direction (35%) ──────────────────────────
-  // OI rising + price rising = new longs (bullish)
-  // OI rising + price falling = new shorts (bearish)
-  // OI falling + price rising = short covering (mild bull)
-  // OI falling + price falling = long liquidation (bearish)
+  // ── 1. OI + price direction (35%) ──────────────────────────
   let oiRaw = 0;
   if (oiHistory?.length >= 4 && analysis?.candles?.length >= 4) {
     const recentOI  = oiHistory.slice(-4);
@@ -427,72 +417,53 @@ function calcDerivScore(data, analysis) {
     const lastIdx   = analysis.candles.length - 1;
     const priceChg  = (analysis.candles[lastIdx].close - analysis.candles[lastIdx - 3].close)
                     / analysis.candles[lastIdx - 3].close;
-
-    const OI_SIG    = 0.02;  // 2% OI change = significant
-    const PRICE_SIG = 0.008; // 0.8% price change = significant
-
-    if      (oiChg >  OI_SIG && priceChg >  PRICE_SIG) oiRaw =  0.85; // new longs
-    else if (oiChg >  OI_SIG && priceChg < -PRICE_SIG) oiRaw = -0.90; // new shorts
-    else if (oiChg < -OI_SIG && priceChg >  PRICE_SIG) oiRaw =  0.40; // short covering
-    else if (oiChg < -OI_SIG && priceChg < -PRICE_SIG) oiRaw = -0.50; // long liquidation
-    else if (oiChg >  OI_SIG)                           oiRaw =  0.20; // OI up, price flat
-    // else: no signal, oiRaw stays 0
+    const OI_SIG    = 0.02;
+    const PRICE_SIG = 0.008;
+    if      (oiChg >  OI_SIG && priceChg >  PRICE_SIG) oiRaw =  0.85;
+    else if (oiChg >  OI_SIG && priceChg < -PRICE_SIG) oiRaw = -0.90;
+    else if (oiChg < -OI_SIG && priceChg >  PRICE_SIG) oiRaw =  0.40;
+    else if (oiChg < -OI_SIG && priceChg < -PRICE_SIG) oiRaw = -0.50;
+    else if (oiChg >  OI_SIG)                           oiRaw =  0.20;
   }
   components.oi = { score: toComponent(oiRaw, 35), weight: 35, label: 'OI Flow' };
 
-  // ── 3. Basis slope (30%) ───────────────────────────────────
-  // Contracting basis = futures converging to spot = de-leveraging = healthy
-  // Expanding basis = futures above spot = overleveraged longs = risk
-  // Flat = neutral
+  // ── 2. Basis slope (30%) ───────────────────────────────────
   let basisRaw = 0;
   const basisAna = analysis?.basisAnalysis;
   if (basisAna && basisAna.direction !== 'unknown') {
-    if (basisAna.direction === 'contracting') {
-      basisRaw = 0.65;  // healthy convergence — supportive
-    } else if (basisAna.direction === 'flat') {
-      basisRaw = 0.05;  // slight positive — stable
-    } else if (basisAna.direction === 'expanding') {
-      // Expanding = warning — scale penalty by slope magnitude
-      basisRaw = Math.max(-1, -Math.abs(basisAna.slope) * 250);
-    }
+    if      (basisAna.direction === 'contracting') basisRaw =  0.65;
+    else if (basisAna.direction === 'flat')        basisRaw =  0.05;
+    else if (basisAna.direction === 'expanding')   basisRaw = Math.max(-1, -Math.abs(basisAna.slope) * 250);
   }
   components.basis = { score: toComponent(basisRaw, 30), weight: 30, label: 'Basis' };
 
-  // ── 4. Taker flow (15%) ────────────────────────────────────
-  // CVD bias from aggTrades — positive = net buy aggression
-  // Scale: ±30% cvdBias → ±1.0 raw
+  // ── 3. Taker flow (15%) ────────────────────────────────────
   let takerRaw = 0;
   if (takerFlow) {
     takerRaw = Math.max(-1, Math.min(1, takerFlow.takerBias / 30));
   }
   components.taker = { score: toComponent(takerRaw, 15), weight: 15, label: 'Taker Flow' };
 
-  // ── 5. Insurance fund state (10%) ─────────────────────────
-  // Stressed = large liquidation cascade = market instability = negative
-  // Rising = exchange absorbing normally = positive context
+  // ── 4. Insurance fund state (10%) ─────────────────────────
   let insureRaw = 0;
   const insT = analysis?.insuranceTrend;
   if (insT && insT.trend !== 'unknown') {
-    if (insT.stressed)                                        insureRaw = -1.0;
-    else if (insT.trend === 'rising')                         insureRaw =  0.5;
-    else if (insT.trend === 'falling' && insT.deltaPct < -0.5) insureRaw = -0.5;
-    else                                                      insureRaw =  0.1;
+    if      (insT.stressed)                                        insureRaw = -1.0;
+    else if (insT.trend === 'rising')                              insureRaw =  0.5;
+    else if (insT.trend === 'falling' && insT.deltaPct < -0.5)    insureRaw = -0.5;
+    else                                                           insureRaw =  0.1;
   }
   components.insurance = { score: toComponent(insureRaw, 10), weight: 10, label: 'Insurance' };
 
-  // ── 6. Bid/ask spread tightness (5%) ──────────────────────
-  // Tight spread = liquid = healthy
-  // Wide spread = stressed or illiquid
+  // ── 5. Bid/ask spread tightness (5%) ──────────────────────
   let spreadRaw = 0;
   if (bookTicker?.spread != null) {
     spreadRaw = Math.max(-1, Math.min(1, (0.05 - bookTicker.spread) / 0.05));
   }
   components.spread = { score: toComponent(spreadRaw, 5), weight: 5, label: 'Spread' };
 
-  // ── Final derivScore ────────────────────────────────────────
-  // totalWeighted is sum of (score × weight) for weights 35+30+15+10+5 = 95
-  // Divide by 95 (not 100) since funding weight = 0
-  const derivScore = Math.round(totalWeighted / 95);
+  // ── Final derivScore — weights sum to exactly 100 ──────────
+  const derivScore = Math.round(totalWeighted / 100);
 
   let derivLabel, derivColor;
   if      (derivScore >= 70) { derivLabel = 'STRONG BULL'; derivColor = '#00e676'; }
